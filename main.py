@@ -69,7 +69,7 @@ class AClient(commands.Bot):
                 await self.change_presence(
                     activity=discord.Game(f"현재 핑: {ping}ms")
                 )
-                await asyncio.sleep(600)  # 10분마다 업데이트
+                await asyncio.sleep(60)  # 10분마다 업데이트
             except Exception as e:
                 print(f"❌ 상태 업데이트 오류: {e}")
 
