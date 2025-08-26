@@ -1,5 +1,6 @@
 import os
 import asyncio
+import datetime
 import discord
 from discord.ext import commands
 import psycopg2
@@ -9,26 +10,43 @@ load_dotenv()
 
 class AClient(commands.Bot):
     def __init__(self):
-        intents = discord.Intents.default()  # 기본 인텐트만 활성화
-        intents.members = True  # 승인된 'Server Members Intent' 활성화
+        intents = discord.Intents.default()
+        intents.members = True  # Server Members Intent 사용
 
         super().__init__(command_prefix="!", intents=intents)
         self.synced = False
+        self.start_time = datetime.datetime.now()  # 업타임 기준 시각
         self.setup_db_connection()
 
+    # --------- 유틸 ----------
+    @staticmethod
+    def format_uptime(delta: datetime.timedelta) -> str:
+        days = delta.days
+        seconds = delta.seconds
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        return f"{days}d {hours}h {minutes}m"
+
     async def setup_hook(self):
+        # 코그 로드
         for filename in os.listdir("./cogs"):
             if filename.endswith(".py"):
                 await self.load_extension(f"cogs.{filename[:-3]}")
+
+        # 슬래시 동기화 1회
         if not self.synced:
             await self.tree.sync()
             self.synced = True
+
+        # 상태 업데이트를 백그라운드 태스크로 시작
+        self.loop.create_task(self.update_status())
+
         print("✅ 준비 완료")
 
     async def on_ready(self):
-        await self.update_status()
         print(f"✅ {self.user} 로그인 완료")
 
+    # --------- DB ----------
     def setup_db_connection(self):
         try:
             self.conn = psycopg2.connect(
@@ -57,21 +75,22 @@ class AClient(commands.Bot):
 
     def get_cursor(self):
         """데이터베이스 연결을 확인하고 커서 반환"""
-        if self.ensure_db_connection():  # ensure_db_connection()이 False면 None을 반환
+        if self.ensure_db_connection():
             return self.conn.cursor()
-        return None  # 연결이 없으면 None 반환
+        return None
 
+    # --------- 상태 메시지: 업타임 ---------
     async def update_status(self):
-        while True:
+        await self.wait_until_ready()
+        while not self.is_closed():
             try:
-                ping = round(self.latency * 1000)
-
-                await self.change_presence(
-                    activity=discord.Game(f"현재 핑: {ping}ms")
-                )
-                await asyncio.sleep(60)  # 10분마다 업데이트
+                uptime = datetime.datetime.now() - self.start_time
+                text = f"⏱️ Uptime: {self.format_uptime(uptime)}"
+                await self.change_presence(activity=discord.Game(text))
+                await asyncio.sleep(60)  # 1분마다 업데이트
             except Exception as e:
                 print(f"❌ 상태 업데이트 오류: {e}")
+                await asyncio.sleep(5)
 
 client = AClient()
 
