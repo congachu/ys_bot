@@ -89,7 +89,7 @@ class Bank(commands.Cog):
 
         # 성공 메시지는 겨울 테마 임베드 유지
         embed = discord.Embed(
-            title="⛄ 지갑",
+            title="지갑 🎐",
             description=f"서리가 남긴 맑은 소리 , **{bal:,}령**",
             color=discord.Color.blue()
         )
@@ -126,14 +126,21 @@ class Bank(commands.Cog):
             return
 
         embed = discord.Embed(
-            title="❄️ 송금 완료",
+            title="송금 ☃️",
             description=f"쓰지 못해 미룬 마음, **{금액:,}령**\n\n{sender.mention} ➝ {receiver.mention}",
             color=discord.Color.teal()
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="지급", description="관리진 전용: 대상에게 nn령 지급합니다.")
-    async def cmd_grant(self, interaction: discord.Interaction, 대상: discord.Member, 금액: int):
+    @app_commands.command(name="지급", description="관리진 전용: 대상(또는 역할 전체)에게 nn령 지급합니다.")
+    async def cmd_grant(
+            self,
+            interaction: discord.Interaction,
+            금액: int,
+            사유: str,
+            대상: discord.Member | None = None,
+            역할: discord.Role | None = None,
+    ):
         if not await self.check_bot_channel(interaction):
             return
         if not await self.check_admin(interaction):
@@ -142,28 +149,80 @@ class Bank(commands.Cog):
             await self._deny(interaction, "❌ 지급 금액은 **1 이상**이어야 해요.")
             return
 
-        await self.ensure_user(대상.id)
+        # 대상/역할 검증
+        if (대상 is None and 역할 is None) or (대상 is not None and 역할 is not None):
+            await self._deny(interaction, "⚠️ `대상` **또는** `역할` 중 하나만 지정해주세요.")
+            return
+
         cur = self.bot.cursor
+
+        # 개별 사용자 지급
+        if 대상 is not None:
+            await self.ensure_user(대상.id)
+            try:
+                cur.execute("UPDATE users SET money = money + %s WHERE uuid=%s", (금액, 대상.id))
+                self.bot.conn.commit()
+            except Exception:
+                self.bot.conn.rollback()
+                await self._deny(interaction, "⚠️ 지급 처리 중 문제가 발생했어요.")
+                return
+
+            cur.execute("SELECT money FROM users WHERE uuid=%s", (대상.id,))
+            bal = cur.fetchone()[0]
+
+            desc = f"{대상.mention} **{금액:,}령** 지급되었습니다.\n잔액: **{bal:,}령**"
+            if 사유:
+                desc += f"\n\n📝 사유: {discord.utils.escape_markdown(사유)}"
+
+            embed = discord.Embed(
+                title="지급 💎",
+                description=desc,
+                color=discord.Color.teal(),
+            )
+            await interaction.response.send_message(embed=embed)
+            return
+
+        # 역할 전체 지급
+        members = [m for m in interaction.guild.members if (역할 in m.roles) and (not m.bot)]
+        if not members:
+            await self._deny(interaction, "⚠️ 해당 역할을 가진 **사람**(봇 제외)이 없어요.")
+            return
+
+        # 사용자 보장 + 일괄 지급
         try:
-            cur.execute("UPDATE users SET money = money + %s WHERE uuid=%s", (금액, 대상.id))
+            for m in members:
+                await self.ensure_user(m.id)
+            params = [(금액, m.id) for m in members]
+            # executemany로 일괄 업데이트
+            cur.executemany("UPDATE users SET money = money + %s WHERE uuid=%s", params)
             self.bot.conn.commit()
         except Exception:
             self.bot.conn.rollback()
-            await self._deny(interaction, "⚠️ 지급 처리 중 문제가 발생했어요.")
+            await self._deny(interaction, "⚠️ 역할 지급 처리 중 문제가 발생했어요.")
             return
 
-        cur.execute("SELECT money FROM users WHERE uuid=%s", (대상.id,))
-        bal = cur.fetchone()[0]
+        총인원 = len(members)
+        총액 = 금액 * 총인원
+        desc = f"{역할.mention} 역할 구성원 **{총인원}명**에게 각 **{금액:,}령** 지급 완료.\n총 지급: **{총액:,}령**"
+        if 사유:
+            desc += f"\n\n📝 사유: {discord.utils.escape_markdown(사유)}"
 
         embed = discord.Embed(
-            title="🎁 지급",
-            description=f"{대상.mention} **{금액:,}령** 지급되었습니다.\n잔액: **{bal:,}령**",
-            color=discord.Color.teal()
+            title="지급 💎",
+            description=desc,
+            color=discord.Color.teal(),
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="회수", description="관리진 전용: 대상에게서 nn령 회수합니다.")
-    async def cmd_withdraw(self, interaction: discord.Interaction, 대상: discord.Member, 금액: int):
+    @app_commands.command(name="회수", description="관리진 전용: 대상(또는 역할 전체)에게서 nn령 회수합니다.")
+    async def cmd_withdraw(
+            self,
+            interaction: discord.Interaction,
+            금액: int,
+            사유: str,
+            대상: discord.Member | None = None,
+            역할: discord.Role | None = None,
+    ):
         if not await self.check_bot_channel(interaction):
             return
         if not await self.check_admin(interaction):
@@ -172,23 +231,68 @@ class Bank(commands.Cog):
             await self._deny(interaction, "❌ 회수 금액은 **1 이상**이어야 해요.")
             return
 
-        await self.ensure_user(대상.id)
+        if (대상 is None and 역할 is None) or (대상 is not None and 역할 is not None):
+            await self._deny(interaction, "⚠️ `대상` **또는** `역할` 중 하나만 지정해주세요.")
+            return
+
         cur = self.bot.cursor
+
+        # 개별 사용자 회수
+        if 대상 is not None:
+            await self.ensure_user(대상.id)
+            try:
+                cur.execute("UPDATE users SET money = GREATEST(money - %s, 0) WHERE uuid=%s", (금액, 대상.id))
+                self.bot.conn.commit()
+            except Exception:
+                self.bot.conn.rollback()
+                await self._deny(interaction, "⚠️ 회수 처리 중 문제가 발생했어요.")
+                return
+
+            cur.execute("SELECT money FROM users WHERE uuid=%s", (대상.id,))
+            bal = cur.fetchone()[0]
+
+            desc = f"{대상.mention} **{금액:,}령** 회수되었습니다.\n잔액: **{bal:,}령**"
+            if 사유:
+                desc += f"\n\n📝 사유: {discord.utils.escape_markdown(사유)}"
+
+            embed = discord.Embed(
+                title="회수 💧",
+                description=desc,
+                color=discord.Color.dark_blue(),
+            )
+            await interaction.response.send_message(embed=embed)
+            return
+
+        # 역할 전체 회수
+        members = [m for m in interaction.guild.members if (역할 in m.roles) and (not m.bot)]
+        if not members:
+            await self._deny(interaction, "⚠️ 해당 역할을 가진 **사람**(봇 제외)이 없어요.")
+            return
+
         try:
-            cur.execute("UPDATE users SET money = GREATEST(money - %s, 0) WHERE uuid=%s", (금액, 대상.id))
+            for m in members:
+                await self.ensure_user(m.id)
+            params = [(금액, m.id) for m in members]
+            cur.executemany("UPDATE users SET money = GREATEST(money - %s, 0) WHERE uuid=%s", params)
             self.bot.conn.commit()
         except Exception:
             self.bot.conn.rollback()
-            await self._deny(interaction, "⚠️ 회수 처리 중 문제가 발생했어요.")
+            await self._deny(interaction, "⚠️ 역할 회수 처리 중 문제가 발생했어요.")
             return
 
-        cur.execute("SELECT money FROM users WHERE uuid=%s", (대상.id,))
-        bal = cur.fetchone()[0]
+        총인원 = len(members)
+        총액_명목 = 금액 * 총인원  # 실제로는 GREATEST로 인해 총 회수액이 이보다 적을 수 있음
+        desc = (
+            f"{역할.mention} 역할 구성원 **{총인원}명**에게서 각 **{금액:,}령** 회수 시도 완료.\n"
+            f"명목상 최대 회수: **{총액_명목:,}령**"
+        )
+        if 사유:
+            desc += f"\n\n📝 사유: {discord.utils.escape_markdown(사유)}"
 
         embed = discord.Embed(
-            title="🌨️ 회수",
-            description=f"{대상.mention} **{금액:,}령** 회수되었습니다.\n잔액: **{bal:,}령**",
-            color=discord.Color.dark_blue()
+            title="회수 💧",
+            description=desc,
+            color=discord.Color.dark_blue(),
         )
         await interaction.response.send_message(embed=embed)
 
@@ -225,7 +329,7 @@ class Bank(commands.Cog):
             return
 
         embed = discord.Embed(
-            title="❄️ 소복",
+            title="소복 ❄️",
             description=(
                 "소복소복 , 눈이 내리는 날 .\n"
                 "맑은 방울 소리가 아련히 들려옵니다.\n\n"
