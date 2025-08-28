@@ -9,6 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
+from typing import List, Tuple
 
 load_dotenv()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
@@ -337,6 +338,62 @@ class Bank(commands.Cog):
             ),
             color=discord.Color.blue()
         )
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="순위", description="보유 금액 상위 10명을 보여줍니다.")
+    async def cmd_leaderboard(self, interaction: discord.Interaction):
+        if not await self.check_bot_channel(interaction):
+            return
+
+        user = interaction.user
+        await self.ensure_user(user.id)
+
+        cur = self.bot.cursor
+        try:
+            # 상위 10명
+            cur.execute("""
+                SELECT uuid, money
+                FROM users
+                ORDER BY money DESC, uuid ASC
+                LIMIT 10
+            """)
+            top = cur.fetchall()
+
+            # 내 순위
+            cur.execute("""
+                SELECT rnk, money FROM (
+                  SELECT uuid, money, RANK() OVER (ORDER BY money DESC, uuid ASC) AS rnk
+                  FROM users
+                ) t
+                WHERE uuid = %s
+            """, (user.id,))
+            me = cur.fetchone()
+            my_rank = me[0] if me else None
+            my_money = me[1] if me else 0
+
+        except Exception:
+            await self._deny(interaction, "⚠️ 순위를 불러오는 중 문제가 발생했어요.")
+            return
+
+        # TOP 10 리스트 작성
+        lines = []
+        for idx, (uid, money) in enumerate(top, start=1):
+            member = interaction.guild.get_member(uid)
+            name = member.mention if member else f"(탈퇴/미확인) `{uid}`"
+            lines.append(f"{idx}. {name} — {money:,}령")
+
+        desc = "보유한 **령** 기준 상위 10명\n\n" + "\n".join(lines)
+
+        # 내가 10위 밖일 경우, 맨 아래에 내 순위 추가
+        if my_rank and my_rank > 10:
+            desc += f"\n\n내 순위: {my_rank}위 • 보유: {my_money:,}령"
+
+        embed = discord.Embed(
+            title="랭킹",
+            description=desc,
+            color=discord.Color.blue()
+        )
+
         await interaction.response.send_message(embed=embed)
 
     # ---------- 채팅 보상 ----------
